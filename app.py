@@ -20,7 +20,7 @@ APP_DIR = Path(__file__).parent
 DEMO_DATA_PATH = APP_DIR / "sample_data" / "demo_data.csv"
 
 # ----------------------------------------------------------------------
-# PAGE CONFIG
+# PAGE CONFIG + VISUAL THEME
 # ----------------------------------------------------------------------
 st.set_page_config(
     page_title="Inventory & Demand Forecasting Dashboard",
@@ -28,12 +28,49 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📦 Inventory & Demand Forecasting Dashboard")
-st.caption(
-    "Upload any company's historical sales/stock data and get demand "
-    "forecasts, reorder points, and stockout risk — built for retail, "
-    "e-commerce, or manufacturing inventory planning."
+CUSTOM_CSS = """
+<style>
+    /* Header banner */
+    .app-header {
+        background: linear-gradient(135deg, #1B2A4A 0%, #2F4B7C 50%, #F58518 150%);
+        padding: 2rem 2.2rem;
+        border-radius: 14px;
+        margin-bottom: 1.6rem;
+    }
+    .app-header h1 { color: #FFFFFF; margin: 0; font-size: 2rem; }
+    .app-header p { color: #E7ECF7; margin: .4rem 0 0 0; font-size: 1.02rem; }
+
+    /* KPI metric cards */
+    div[data-testid="stMetric"] {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        padding: 1rem 1rem 0.6rem 1rem;
+    }
+    div[data-testid="stMetricLabel"] { font-weight: 600; opacity: 0.85; }
+
+    /* Section headers */
+    h2, h3 { border-left: 4px solid #F58518; padding-left: .6rem; }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] { border-right: 1px solid rgba(255,255,255,0.08); }
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+st.markdown(
+    """
+    <div class="app-header">
+        <h1>📦 Inventory &amp; Demand Forecasting Dashboard</h1>
+        <p>Upload any company's historical sales/stock data (CSV or Excel) and get demand
+        forecasts, reorder points, and stockout risk — built for retail, e-commerce,
+        or manufacturing inventory planning.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
+
+PLOTLY_TEMPLATE = "plotly_dark"
 
 # ----------------------------------------------------------------------
 # STEP 1: DATA INPUT
@@ -42,15 +79,27 @@ st.sidebar.header("1. Load your data")
 
 data_source = st.sidebar.radio(
     "Choose a data source",
-    ["Use demo dataset", "Upload my own CSV"],
+    ["Use demo dataset", "Upload my own file (CSV or Excel)"],
 )
 
-if data_source == "Upload my own CSV":
-    uploaded_file = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
+if data_source == "Upload my own file (CSV or Excel)":
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload CSV or Excel file", type=["csv", "xlsx", "xls"]
+    )
     if uploaded_file is None:
-        st.info("👈 Upload a CSV in the sidebar to get started, or switch to the demo dataset.")
+        st.info("👈 Upload a CSV or Excel file in the sidebar to get started, or switch to the demo dataset.")
         st.stop()
-    raw_df = pd.read_csv(uploaded_file)
+
+    file_name = uploaded_file.name.lower()
+    if file_name.endswith((".xlsx", ".xls")):
+        # An Excel file might have multiple sheets — let the user pick one.
+        excel_file = pd.ExcelFile(uploaded_file)
+        sheet_name = excel_file.sheet_names[0]
+        if len(excel_file.sheet_names) > 1:
+            sheet_name = st.sidebar.selectbox("Excel sheet to use", excel_file.sheet_names)
+        raw_df = excel_file.parse(sheet_name)
+    else:
+        raw_df = pd.read_csv(uploaded_file)
 else:
     if not DEMO_DATA_PATH.exists():
         st.error(
@@ -104,17 +153,19 @@ products = sorted(df[product_col].unique().tolist())
 # STEP 3: FORECAST SETTINGS
 # ----------------------------------------------------------------------
 st.sidebar.header("3. Forecast settings")
+st.sidebar.caption(f"{len(products)} product(s) detected in your data.")
 selected_product = st.sidebar.selectbox("Product to analyze", products)
-forecast_days = st.sidebar.slider("Forecast horizon (days)", 7, 60, 14)
-lead_time_days = st.sidebar.slider("Supplier lead time (days)", 1, 30, 7)
+forecast_days = st.sidebar.slider("Forecast horizon (days)", 7, 180, 14)
+lead_time_days = st.sidebar.slider("Supplier lead time (days)", 1, 90, 7)
 service_level = st.sidebar.select_slider(
     "Target service level (chance of NOT running out of stock)",
-    options=[0.90, 0.95, 0.975, 0.99],
+    options=[0.80, 0.85, 0.90, 0.95, 0.975, 0.99, 0.995, 0.999],
     value=0.95,
 )
 
 # z-score for service level (standard safety stock formula)
-Z_TABLE = {0.90: 1.28, 0.95: 1.645, 0.975: 1.96, 0.99: 2.33}
+Z_TABLE = {0.80: 0.84, 0.85: 1.04, 0.90: 1.28, 0.95: 1.645, 0.975: 1.96,
+           0.99: 2.33, 0.995: 2.576, 0.999: 3.09}
 z = Z_TABLE[service_level]
 
 # ----------------------------------------------------------------------
@@ -200,13 +251,18 @@ if current_stock is not None:
 # CHART: HISTORY + FORECAST
 # ----------------------------------------------------------------------
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=product_df[date_col], y=demand_series, name="Actual demand", line=dict(color="#4C78A8")))
-fig.add_trace(go.Scatter(x=future_dates, y=forecast_values, name="Forecast", line=dict(color="#F58518", dash="dash")))
-fig.add_hline(y=reorder_point, line_dash="dot", line_color="red", annotation_text="Reorder point")
+fig.add_trace(go.Scatter(x=product_df[date_col], y=demand_series, name="Actual demand",
+                          line=dict(color="#5B8FE8", width=2)))
+fig.add_trace(go.Scatter(x=future_dates, y=forecast_values, name="Forecast",
+                          line=dict(color="#F58518", width=2, dash="dash")))
+fig.add_hline(y=reorder_point, line_dash="dot", line_color="#E45756", annotation_text="Reorder point")
 fig.update_layout(
+    template=PLOTLY_TEMPLATE,
     xaxis_title="Date", yaxis_title="Units demanded",
     legend=dict(orientation="h", yanchor="bottom", y=1.02),
     height=450,
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
 )
 st.plotly_chart(fig, use_container_width=True)
 
@@ -216,8 +272,14 @@ st.plotly_chart(fig, use_container_width=True)
 st.divider()
 st.subheader("All products at a glance")
 
+if len(products) > 10:
+    search_term = st.text_input("🔍 Search products", "")
+    products_to_show = [p for p in products if search_term.lower() in str(p).lower()] if search_term else products
+else:
+    products_to_show = products
+
 overview_rows = []
-for p in products:
+for p in products_to_show:
     p_series = df[df[product_col] == p].groupby(date_col)[demand_col].sum()
     p_avg = p_series.tail(30).mean()
     p_std = p_series.tail(30).std()
