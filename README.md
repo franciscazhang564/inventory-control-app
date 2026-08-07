@@ -14,7 +14,7 @@ Built as a self-contained tool — not tied to one company's dataset — so it c
 be demoed with any retail, e-commerce, or manufacturing inventory data.
 
 ## 🔗 Live demo
-[Add your Streamlit Cloud link here once deployed]
+https://inventory-control-app-hjkebcky8wmcpgvyzvmrpe.streamlit.app/
 
 ## Why I built this
 I'm an International Business Administration student (Tilburg University)
