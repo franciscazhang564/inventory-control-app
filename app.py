@@ -147,6 +147,26 @@ df[demand_col] = pd.to_numeric(df[demand_col], errors="coerce")
 df = df.dropna(subset=[demand_col])
 df = df.sort_values(date_col)
 
+# ------------------------------------------------------------------
+# DATA QUALITY CHECK — fail gracefully instead of crashing on messy
+# real-world files (title rows, merged cells, wrong file shape, etc.)
+# ------------------------------------------------------------------
+if len(df) < 5:
+    st.error(
+        "⚠️ **This file doesn't look like sales/demand data.**\n\n"
+        "After mapping your columns, fewer than 5 usable rows remained — "
+        "usually this means the Date or Demand column you picked doesn't "
+        "actually contain dates/numbers (for example, this might be a "
+        "task list, a report with title rows above the real headers, "
+        "or a sheet with merged cells).\n\n"
+        "**What this app expects:** one row per date per product, with "
+        "a real date column and a numeric demand/units-sold column, "
+        "ideally at least a few weeks of history per product.\n\n"
+        "Try re-checking your column selections above, or use the demo "
+        "dataset to see the expected shape."
+    )
+    st.stop()
+
 products = sorted(df[product_col].unique().tolist())
 
 # ----------------------------------------------------------------------
@@ -192,9 +212,36 @@ def forecast_demand(series: pd.Series, periods: int):
 
 
 product_df = df[df[product_col] == selected_product].groupby(date_col, as_index=False)[demand_col].sum()
-product_df = product_df.set_index(date_col).asfreq("D").ffill().reset_index()
+
+try:
+    # Build a complete daily date range and fill any gaps, so the
+    # forecast model sees an evenly-spaced series (not just sparse dates).
+    full_range = pd.date_range(product_df[date_col].min(), product_df[date_col].max(), freq="D")
+    product_df = (
+        product_df.set_index(date_col)
+        .reindex(full_range)
+        .ffill()
+        .rename_axis(date_col)
+        .reset_index()
+    )
+except Exception:
+    st.warning(
+        "⚠️ Couldn't fill in a continuous daily date range for this product "
+        "(the dates may be irregular or too sparse) — proceeding with the "
+        "raw dates found in your file instead."
+    )
+    product_df = product_df.sort_values(date_col)
 
 demand_series = product_df[demand_col]
+
+if len(demand_series) < 2 or demand_series.dropna().empty:
+    st.error(
+        f"⚠️ Not enough valid demand history for product **{selected_product}** "
+        "to build a forecast. Try a different product, or check that the "
+        "demand column contains real numbers for this product."
+    )
+    st.stop()
+
 forecast_values, fitted_values = forecast_demand(demand_series, forecast_days)
 
 last_date = product_df[date_col].max()
