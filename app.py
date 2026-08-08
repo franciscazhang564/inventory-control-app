@@ -272,8 +272,14 @@ products = sorted(df[product_col].unique().tolist())
 st.sidebar.header("3. Forecast settings")
 st.sidebar.caption(f"{len(products)} product(s) detected in your data.")
 selected_product = st.sidebar.selectbox("Product to analyze", products)
-forecast_days = st.sidebar.slider("Forecast horizon (days)", 7, 180, 14)
-lead_time_days = st.sidebar.slider("Supplier lead time (days)", 1, 90, 7)
+forecast_days = st.sidebar.number_input(
+    "Forecast horizon (days)", min_value=1, value=14, step=1,
+    help="How many days into the future to forecast. No upper limit — type any number.",
+)
+lead_time_days = st.sidebar.number_input(
+    "Supplier lead time (days)", min_value=1, value=7, step=1,
+    help="How many days it takes your supplier to deliver after you order. No upper limit — type any number.",
+)
 service_level = st.sidebar.select_slider(
     "Target service level (chance of NOT running out of stock)",
     options=[0.80, 0.85, 0.90, 0.95, 0.975, 0.99, 0.995, 0.999],
