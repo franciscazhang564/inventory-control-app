@@ -118,26 +118,121 @@ st.dataframe(raw_df.head(10), use_container_width=True)
 # STEP 2: COLUMN MAPPING (this is what makes the app work for ANY company)
 # ----------------------------------------------------------------------
 st.sidebar.header("2. Map your columns")
-st.sidebar.caption("Tell the app which column in YOUR file means what.")
+st.sidebar.caption("Tell the app which column in YOUR file means what — auto-detected below, change if it guessed wrong.")
 
 columns = list(raw_df.columns)
 
 
-def guess(col_options, keywords):
+def keyword_guess(col_options, keywords):
+    """Try to match a column name against a list of likely keywords."""
     for kw in keywords:
         for c in col_options:
-            if kw in c.lower():
+            if kw in str(c).lower():
                 return c
+    return None
+
+
+def detect_date_column(df_sample, col_options, exclude=None):
+    """Fall back to data-type detection: pick whichever column parses
+    as dates most successfully, if no name matches."""
+    exclude = exclude or set()
+    best_col, best_score = None, 0.0
+    for c in col_options:
+        if c in exclude:
+            continue
+        try:
+            parsed = pd.to_datetime(df_sample[c], errors="coerce")
+            score = parsed.notna().mean()
+        except Exception:
+            score = 0.0
+        if score > best_score:
+            best_col, best_score = c, score
+    return best_col if best_score > 0.5 else None
+
+
+def detect_numeric_column(df_sample, col_options, exclude=None):
+    """Fall back to data-type detection: pick the numeric column with the
+    most variation, skipping obvious ID-like columns."""
+    exclude = exclude or set()
+    candidates = []
+    for c in col_options:
+        if c in exclude:
+            continue
+        if "id" in str(c).lower():
+            continue
+        numeric = pd.to_numeric(df_sample[c], errors="coerce")
+        valid_ratio = numeric.notna().mean()
+        if valid_ratio > 0.8 and numeric.nunique() > 3:
+            candidates.append((c, numeric.std()))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
+
+
+def detect_category_column(df_sample, col_options, exclude=None):
+    """Fall back to data-type detection: pick a text/categorical column
+    with a reasonable number of repeated distinct values (not an ID,
+    not free text, not all-unique)."""
+    exclude = exclude or set()
+    best_col, best_score = None, -1
+    n = len(df_sample)
+    for c in col_options:
+        if c in exclude:
+            continue
+        if "id" in str(c).lower():
+            continue
+        nunique = df_sample[c].nunique(dropna=True)
+        if nunique < 2 or nunique > max(50, n * 0.5):
+            continue
+        # Prefer columns with fewer distinct values (more product-like, less free-text-like)
+        score = -nunique
+        if score > best_score:
+            best_col, best_score = c, score
+    return best_col
+
+
+def guess(col_options, keywords, sample_df=None, kind=None, exclude=None):
+    """Name-based guess first; falls back to data-type detection if no
+    keyword matches, so the app still works on unfamiliar column names."""
+    match = keyword_guess(col_options, keywords)
+    if match:
+        return match
+    if sample_df is not None and kind == "date":
+        detected = detect_date_column(sample_df, col_options, exclude)
+        if detected:
+            return detected
+    if sample_df is not None and kind == "numeric":
+        detected = detect_numeric_column(sample_df, col_options, exclude)
+        if detected:
+            return detected
+    if sample_df is not None and kind == "category":
+        detected = detect_category_column(sample_df, col_options, exclude)
+        if detected:
+            return detected
     return col_options[0]
 
 
-date_col = st.sidebar.selectbox("Date column", columns, index=columns.index(guess(columns, ["date"])))
-product_col = st.sidebar.selectbox("Product / SKU column", columns, index=columns.index(guess(columns, ["product", "sku", "item"])))
-demand_col = st.sidebar.selectbox("Demand / units sold column", columns, index=columns.index(guess(columns, ["demand", "sales", "sold", "qty"])))
+_sample = raw_df.head(200)  # detection only needs a sample, keeps it fast
+
+date_col = st.sidebar.selectbox(
+    "Date column", columns,
+    index=columns.index(guess(columns, ["date", "day", "time", "period"], _sample, kind="date")),
+)
+product_col = st.sidebar.selectbox(
+    "Product / SKU column", columns,
+    index=columns.index(guess(columns, ["product", "sku", "item", "category", "name"], _sample, kind="category", exclude={date_col})),
+)
+demand_col = st.sidebar.selectbox(
+    "Demand / units sold column", columns,
+    index=columns.index(guess(columns, ["demand", "sales", "sold", "qty", "quantity", "units", "volume", "orders"], _sample, kind="numeric", exclude={date_col, product_col})),
+)
 stock_col_options = ["(none)"] + columns
-stock_col = st.sidebar.selectbox("Current stock column (optional)", stock_col_options,
-                                  index=(stock_col_options.index(guess(columns, ["stock", "inventory"]))
-                                         if guess(columns, ["stock", "inventory"]) in stock_col_options else 0))
+_stock_guess = keyword_guess(columns, ["stock", "inventory", "on hand", "on_hand"])
+stock_col = st.sidebar.selectbox(
+    "Current stock column (optional)", stock_col_options,
+    index=(stock_col_options.index(_stock_guess) if _stock_guess else 0),
+)
 
 # Clean & standardize
 df = raw_df.copy()
@@ -153,17 +248,19 @@ df = df.sort_values(date_col)
 # ------------------------------------------------------------------
 if len(df) < 5:
     st.error(
-        "⚠️ **This file doesn't look like sales/demand data.**\n\n"
-        "After mapping your columns, fewer than 5 usable rows remained — "
-        "usually this means the Date or Demand column you picked doesn't "
-        "actually contain dates/numbers (for example, this might be a "
-        "task list, a report with title rows above the real headers, "
-        "or a sheet with merged cells).\n\n"
+        "⚠️ **After mapping, fewer than 5 usable rows remained.**\n\n"
+        "This usually means one of two things:\n\n"
+        "1. **Most likely** — the column mapping above picked the wrong "
+        "column. Double-check that Date, Product, and Demand are each "
+        "pointing at the right column in *your* file (the auto-guess "
+        "isn't perfect, especially with unusual column names).\n\n"
+        "2. This file genuinely isn't sales/demand data (e.g. a task "
+        "list or report with title rows above the real headers).\n\n"
         "**What this app expects:** one row per date per product, with "
-        "a real date column and a numeric demand/units-sold column, "
-        "ideally at least a few weeks of history per product.\n\n"
-        "Try re-checking your column selections above, or use the demo "
-        "dataset to see the expected shape."
+        "a real date column and a numeric demand/units-sold/quantity "
+        "column, ideally at least a few weeks of history per product.\n\n"
+        "Try adjusting the column mapping in the sidebar first, or use "
+        "the demo dataset to see the expected shape."
     )
     st.stop()
 
